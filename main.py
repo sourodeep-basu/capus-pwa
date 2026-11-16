@@ -49,7 +49,8 @@ def init_db():
                 courses_total INTEGER DEFAULT 0,
                 courses_marked INTEGER DEFAULT 0,
                 journal_today INTEGER DEFAULT 0,
-                updated REAL DEFAULT 0
+                updated REAL DEFAULT 0,
+                slots TEXT DEFAULT '[]'
             );
             CREATE TABLE IF NOT EXISTS sent(
                 device_id TEXT, key TEXT, ts REAL,
@@ -57,6 +58,10 @@ def init_db():
             );
             """
         )
+        try:  # upgrade databases created before timetable support
+            con.execute("ALTER TABLE devices ADD COLUMN slots TEXT DEFAULT '[]'")
+        except sqlite3.OperationalError:
+            pass
         con.commit()
 
 
@@ -102,9 +107,15 @@ def run_checks():
                     send_once(con, dev, f"o:{t['id']}:{int(t['due'])}", "Task overdue", f"{t['t']} is past its deadline")
 
             local = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=dev["tz"])
+            today = local.strftime("%Y-%m-%d")
+            nowmin = local.hour * 60 + local.minute
+            jsdow = (local.weekday() + 1) % 7  # JS getDay(): Sunday is 0
+            for sl in json.loads(dev["slots"] or "[]"):
+                gap = sl["s"] - nowmin
+                if sl["dow"] == jsdow and 0 < gap <= 15:
+                    send_once(con, dev, f"c:{sl['id']}:{today}", "Class soon", f"{sl['n']} starts in {gap} minutes")
             if local.strftime("%H:%M") < dev["rt"]:
                 continue
-            today = local.strftime("%Y-%m-%d")
             fresh = dev["sync_date"] == today  # has the app reported today's progress?
             hp = dev["habits_total"] - (dev["habits_done"] if fresh else 0)
             cp = dev["courses_total"] - (dev["courses_marked"] if fresh else 0)
@@ -150,6 +161,13 @@ class TaskIn(BaseModel):
     due: float
 
 
+class SlotIn(BaseModel):
+    id: str = Field(max_length=100)
+    n: str = Field(max_length=200)
+    dow: int = Field(ge=0, le=6)
+    s: int = Field(ge=0, le=1439)  # start, minutes after local midnight
+
+
 class SyncIn(BaseModel):
     device_id: str = Field(min_length=20, max_length=128)
     lead: int = Field(default=30, ge=1, le=10080)
@@ -162,6 +180,7 @@ class SyncIn(BaseModel):
     courses_total: int = Field(default=0, ge=0)
     courses_marked: int = Field(default=0, ge=0)
     journal_today: bool = False
+    slots: list[SlotIn] = Field(default_factory=list, max_length=100)
 
 
 class DevIn(BaseModel):
@@ -194,11 +213,11 @@ def sync(b: SyncIn):
     with closing(db()) as con:
         cur = con.execute(
             """UPDATE devices SET lead=?, rt=?, tz=?, tasks=?, sync_date=?, habits_total=?,
-               habits_done=?, courses_total=?, courses_marked=?, journal_today=?, updated=?
+               habits_done=?, courses_total=?, courses_marked=?, journal_today=?, updated=?, slots=?
                WHERE device_id=?""",
             (b.lead, b.rt, b.tz, json.dumps([t.model_dump() for t in b.tasks]), b.date,
              b.habits_total, b.habits_done, b.courses_total, b.courses_marked,
-             int(b.journal_today), time.time(), b.device_id),
+             int(b.journal_today), time.time(), json.dumps([x.model_dump() for x in b.slots]), b.device_id),
         )
         con.commit()
         if cur.rowcount == 0:
