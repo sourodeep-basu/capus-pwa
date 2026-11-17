@@ -102,9 +102,9 @@ def run_checks():
             for t in json.loads(dev["tasks"]):
                 d = t["due"] - now_ms
                 if 0 < d <= lead_ms:
-                    send_once(con, dev, f"d:{t['id']}:{int(t['due'])}", "Task due soon", f"{t['t']} is due soon")
+                    send_once(con, dev, f"d:{t['id']}:{int(t['due'])}", "Task due soon", f"Due soon: {t['t']}")
                 elif -86400000 < d <= 0:
-                    send_once(con, dev, f"o:{t['id']}:{int(t['due'])}", "Task overdue", f"{t['t']} is past its deadline")
+                    send_once(con, dev, f"o:{t['id']}:{int(t['due'])}", "Task overdue", f"Overdue: {t['t']}")
 
             local = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=dev["tz"])
             today = local.strftime("%Y-%m-%d")

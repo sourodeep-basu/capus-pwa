@@ -1,4 +1,4 @@
-const CACHE = 'campus-life-v2';
+const CACHE = 'campus-life-v5';
 const SHELL = ['/', '/manifest.json', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', e => {
