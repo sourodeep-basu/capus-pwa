@@ -71,7 +71,7 @@ const v=id=>($(id)?$(id).value.trim():'');
 function toast(m){const t=$('toast');t.textContent=m;t.classList.remove('hidden');clearTimeout(toast.t);toast.t=setTimeout(()=>t.classList.add('hidden'),2200)}
 function theme(){const dark=S.theme?S.theme==='dark':matchMedia('(prefers-color-scheme: dark)').matches;document.documentElement.classList.toggle('dark',dark);return dark}
 function setTheme(){S.theme=theme()?'light':'dark';save();render()}
-function go(x){view=x;menu=false;render();const m=document.querySelector('main');if(m)m.classList.add('enter');if(x==='soc')loadSoc();scrollTo(0,0)}
+function go(x){view=x;menu=false;render();const m=document.querySelector('main');if(m)m.classList.add('enter');if(x==='soc'){loadSoc();loadHealth()}scrollTo(0,0)}
 function ask(m,cb,cancel){confirmMsg=m;confirmCb=cb;confirmCancel=cancel||null;ovr()}
 const card='rounded-3xl bg-white dark:bg-slate-800/70 border border-slate-200/80 dark:border-slate-700/60 p-5 shadow-[0_1px_2px_rgba(60,50,30,.04),0_10px_30px_-14px_rgba(60,50,30,.14)]',
 inp='w-full rounded-xl border border-slate-200 dark:border-slate-600/60 bg-slate-50 dark:bg-slate-900/60 px-3.5 py-2.5 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-400/40 focus:border-indigo-400',
@@ -203,28 +203,30 @@ const inQuiet=()=>{const n=S.ntf,x=new Date(),hm=String(x.getHours()).padStart(2
 async function applyCmds(){try{const c=await IDB.get('cmds');if(!c||!c.length)return;await IDB.set('cmds',[]);c.forEach(x=>{if(x.k!=='done')return;if(String(x.id).startsWith('L')){const l=S.led.find(y=>y.id===String(x.id).slice(1));if(l)l.done=true}else{const t=S.tasks.find(y=>y.id===x.id);if(t&&!t.done)tog(x.id)}});save();render();toast('Applied actions from notifications')}catch(e){}}
 
 // --- accounts and background sync (whole-document, last write wins) ---
-let AUTH=null,syncT=null,SOC=null;const SYNC={at:0,msg:''};
+let AUTH=null,syncT=null,SOC=null,HEALTH=null;const SYNC={at:0,msg:''};
 try{AUTH=JSON.parse(localStorage.getItem('cl_auth')||'null')}catch(e){}
 const authH=()=>({'Content-Type':'application/json',Authorization:'Bearer '+AUTH.token});
 const hasData=()=>S.tx.length||S.courses.length||S.tasks.length||S.habits.length||S.sess.length||S.journal.length;
 const myStats=()=>({focus_week:last7(d=>S.sess.filter(s=>s.date===d).reduce((a,s)=>a+s.m,0)).reduce((a,b)=>a+b,0),streak:bestStreak(),xp:xpTotal()});
 function dirty(){clearTimeout(syncT);syncT=setTimeout(()=>syncNow(),3000);if(AUTH&&navigator.onLine===false&&swReg&&swReg.sync)swReg.sync.register('cl-sync').catch(()=>{})}
-async function syncNow(){if(!AUTH||navigator.onLine===false)return;try{const st={...S};delete st.ntf;const r=await fetch('/api/data/push',{method:'POST',headers:authH(),body:JSON.stringify({ts:S._ts||Date.now(),state:st,stats:myStats()})});if(r.status===401){logoutLocal();return}if(!r.ok)throw 0;const j=await r.json();SYNC.at=Date.now();SYNC.msg='';if(j.state&&j.ts>(S._ts||0))adopt(j.state,j.ts);else if(view==='soc')render()}catch(e){SYNC.msg='Will retry when you are back online.';if(view==='soc')render()}}
+async function syncNow(){if(!AUTH||navigator.onLine===false)return;try{const st={...S};delete st.ntf;const r=await fetch('/api/data/push',{method:'POST',headers:authH(),body:JSON.stringify({ts:S._ts||Date.now(),state:st,stats:myStats()})});if(r.status===401){logoutLocal(true);return}if(!r.ok)throw 0;const j=await r.json();SYNC.at=Date.now();SYNC.msg='';if(j.state&&j.ts>(S._ts||0))adopt(j.state,j.ts);else if(view==='soc')render()}catch(e){SYNC.msg='Will retry when you are back online.';if(view==='soc')render()}}
 function adopt(st,ts){st.ntf=S.ntf;S=st;S._ts=ts;store(true);location.reload()}
 async function pullAdopt(){try{const r=await fetch('/api/data/pull',{headers:authH()}),j=await r.json();if(j.state)adopt(j.state,j.ts)}catch(e){toast('Could not load your account data')}}
-function logoutLocal(){AUTH=null;SOC=null;try{localStorage.removeItem('cl_auth')}catch(e){}IDB.set('auth',null).catch(()=>{});render()}
-async function jpost(p,b){const r=await fetch(p,{method:'POST',headers:AUTH?authH():{'Content-Type':'application/json'},body:JSON.stringify(b||{})});const j=await r.json().catch(()=>({}));if(!r.ok){if(r.status===401&&AUTH)logoutLocal();throw new Error(typeof j.detail==='string'?j.detail:'Request failed')}return j}
+function logoutLocal(expired){AUTH=null;SOC=null;try{localStorage.removeItem('cl_auth')}catch(e){}IDB.set('auth',null).catch(()=>{});render();if(expired)toast('Your session ended. Sign in again - your data on this device is safe.')}
+async function jpost(p,b){const r=await fetch(p,{method:'POST',headers:AUTH?authH():{'Content-Type':'application/json'},body:JSON.stringify(b||{})});const j=await r.json().catch(()=>({}));if(!r.ok){if(r.status===401&&AUTH)logoutLocal(true);throw new Error(typeof j.detail==='string'?j.detail:'Request failed')}return j}
 async function doAuth(kind){try{const email=v('ae').toLowerCase(),j=await jpost('/api/auth/'+kind,{email,password:$('ap').value});AUTH={token:j.token,email};try{localStorage.setItem('cl_auth',JSON.stringify(AUTH))}catch(e){}IDB.set('auth',AUTH).catch(()=>{});
 if(j.has_data&&hasData())ask("This account already has saved data. Replace the data on this device with it? Choose Cancel to keep this device's data and overwrite the account copy.",pullAdopt,()=>syncNow());else if(j.has_data)await pullAdopt();else syncNow();render();loadSoc()}catch(e){toast(e.message)}}
 async function doLogout(){try{await jpost('/api/auth/logout')}catch(e){}logoutLocal()}
 function cancelAsk(){const c=confirmCancel;confirmCb=null;confirmCancel=null;ovr();if(c)c()}
 
 // --- friends and leaderboard (friends only ever see these totals: focus minutes, best streak, XP) ---
-async function loadSoc(){if(!AUTH)return;try{const r=await fetch('/api/social/overview',{headers:authH()});if(r.status===401)return logoutLocal();SOC=await r.json();if(view==='soc')render()}catch(e){}}
+async function loadHealth(){try{HEALTH=await(await fetch('/api/health')).json();if(view==='soc')render()}catch(e){}}
+const warnBox=()=>HEALTH&&HEALTH.durable===false?`<div class="mt-3 rounded-2xl border border-amber-300 dark:border-amber-700/60 bg-amber-50 dark:bg-amber-950/30 p-3 text-sm text-amber-900 dark:text-amber-100">This server keeps accounts on temporary storage that is erased whenever it restarts or redeploys, so accounts and sign-ins can disappear. Connect a database to keep them permanently (see the README). Your data on this device is not affected.</div>`:'';
+async function loadSoc(){if(!AUTH)return;try{const r=await fetch('/api/social/overview',{headers:authH()});if(r.status===401)return logoutLocal(true);SOC=await r.json();if(view==='soc')render()}catch(e){}}
 async function socAct(p,b,msg){try{const j=await jpost(p,b);if(msg)toast(typeof msg==='function'?msg(j):msg);await loadSoc()}catch(e){toast(e.message)}}
 const saveHandle=()=>socAct('/api/social/handle',{handle:v('sh'),name:v('sn')},'Profile saved');
 const sendReq=()=>socAct('/api/social/request',{handle:v('sf')},j=>j.result==='accepted'?'You are now friends':'Request sent');
-function vSoc(){const hd=banner('x','Friends','Friends and leaderboard','Friends only see your weekly totals');
+function vSoc(){const hd=banner('x','Friends','Friends and leaderboard','Friends only see your weekly totals')+warnBox();
 if(!AUTH)return hd+`<section class="${card} mt-4"><h3 class="font-semibold mb-1">Sign in to sync and compete</h3><p class="text-xs text-slate-500 mb-3">Optional. An account backs up your data across devices and lets friends see your weekly totals. Without one, everything stays on this device.</p><div class="grid grid-cols-1 sm:grid-cols-2 gap-2"><input id="ae" type="email" class="${inp}" placeholder="Email" autocomplete="email"><input id="ap" type="password" class="${inp}" placeholder="Password (8+ characters)" autocomplete="current-password"></div><div class="flex gap-2 mt-3">${btn('Sign in',"doAuth('login')",'bg-indigo-600 text-white')}${btn('Create account',"doAuth('register')")}</div></section>`;
 const acc=`<section class="${card} mt-4"><div class="flex flex-wrap items-center justify-between gap-2"><div><h3 class="font-semibold">Account</h3><p class="text-xs text-slate-500">Signed in as ${esc(AUTH.email)}. ${SYNC.at?'Last synced '+new Date(SYNC.at).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})+'.':''} ${esc(SYNC.msg)}</p></div><div class="flex gap-2">${btn('Sync now','syncNow()')}${btn('Sign out','doLogout()')}</div></div></section>`;
 if(!SOC)return hd+acc+`<div class="mt-4">${em('Loading your friends...')}</div>`;

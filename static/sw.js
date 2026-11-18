@@ -1,5 +1,5 @@
 // Campus Life service worker: offline shell, push (with action buttons), background sync.
-const CACHE = 'campus-life-v7';
+const CACHE = 'campus-life-v8';
 const SHELL = ['/', '/manifest.json', '/icon-192.png', '/icon-512.png'];
 
 // --- tiny IndexedDB helpers (same database the app uses) ---

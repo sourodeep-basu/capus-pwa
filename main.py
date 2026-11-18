@@ -3,7 +3,6 @@ data sync, friends/leaderboard and calendar import."""
 import asyncio
 import json
 import os
-import sqlite3
 import time
 from contextlib import asynccontextmanager, closing
 from datetime import datetime, timedelta, timezone
@@ -18,11 +17,11 @@ from pydantic import BaseModel, Field
 from pywebpush import WebPushException, webpush
 
 import core
+import database
 
 load_dotenv()
 BASE = Path(__file__).parent
 STATIC = BASE / "static"
-DB_PATH = os.environ.get("DB_PATH", str(BASE / "campus.db"))
 VAPID_PRIVATE = os.environ.get("VAPID_PRIVATE_KEY", "")
 VAPID_PUBLIC = os.environ.get("VAPID_PUBLIC_KEY", "")
 VAPID_SUBJECT = os.environ.get("VAPID_SUBJECT", "mailto:admin@example.com")
@@ -31,14 +30,12 @@ TASK_ACTIONS = [{"action": "done", "title": "Mark done"}, {"action": "snooze", "
 
 
 def db():
-    con = sqlite3.connect(DB_PATH)
-    con.row_factory = sqlite3.Row
-    return con
+    return database.connect()
 
 
 def init_db():
     with closing(db()) as con:
-        con.executescript(
+        con.script(
             """
             CREATE TABLE IF NOT EXISTS devices(
                 device_id TEXT PRIMARY KEY, subscription TEXT NOT NULL,
@@ -46,17 +43,14 @@ def init_db():
                 tasks TEXT DEFAULT '[]', sync_date TEXT DEFAULT '',
                 habits_total INTEGER DEFAULT 0, habits_done INTEGER DEFAULT 0,
                 courses_total INTEGER DEFAULT 0, courses_marked INTEGER DEFAULT 0,
-                journal_today INTEGER DEFAULT 0, updated REAL DEFAULT 0, slots TEXT DEFAULT '[]');
-            CREATE TABLE IF NOT EXISTS sent(device_id TEXT, key TEXT, ts REAL, PRIMARY KEY(device_id, key));
+                journal_today INTEGER DEFAULT 0, updated DOUBLE PRECISION DEFAULT 0, slots TEXT DEFAULT '[]');
+            CREATE TABLE IF NOT EXISTS sent(device_id TEXT, key TEXT, ts DOUBLE PRECISION, PRIMARY KEY(device_id, key));
             """
         )
         # upgrade databases created by earlier versions
-        for col, ddl in [("slots", "TEXT DEFAULT '[]'"), ("st", "TEXT DEFAULT '21:30'"),
-                         ("qs", "TEXT DEFAULT ''"), ("qe", "TEXT DEFAULT ''"), ("streaks", "TEXT DEFAULT '[]'")]:
-            try:
-                con.execute(f"ALTER TABLE devices ADD COLUMN {col} {ddl}")
-            except sqlite3.OperationalError:
-                pass
+        for col, definition in [("slots", "TEXT DEFAULT '[]'"), ("st", "TEXT DEFAULT '21:30'"),
+                                ("qs", "TEXT DEFAULT ''"), ("qe", "TEXT DEFAULT ''"), ("streaks", "TEXT DEFAULT '[]'")]:
+            con.add_column("devices", col, definition)
         con.commit()
         core.init(con)
 
@@ -81,7 +75,7 @@ def push(con, dev, title, body, extra=None):
 
 def send_once(con, dev, key, title, body, extra=None):
     """Record the key first so a reminder is never sent twice, then push it."""
-    cur = con.execute("INSERT OR IGNORE INTO sent(device_id,key,ts) VALUES(?,?,?)", (dev["device_id"], key, time.time()))
+    cur = con.execute("INSERT INTO sent(device_id,key,ts) VALUES(?,?,?) ON CONFLICT DO NOTHING", (dev["device_id"], key, time.time()))
     con.commit()
     if cur.rowcount:
         push(con, dev, title, body, dict(extra or {}, tag=key))
@@ -148,6 +142,9 @@ async def scheduler():
 async def lifespan(app):
     if not (VAPID_PRIVATE and VAPID_PUBLIC):
         print("WARNING: VAPID keys missing. Run gen_keys.py and fill in .env")
+    if not database.DURABLE:
+        print("WARNING: using a temporary SQLite file. Accounts will be erased on restart. "
+              "Set DATABASE_URL to a hosted PostgreSQL database (see README).")
     init_db()
     task = asyncio.create_task(scheduler())
     yield
@@ -419,7 +416,8 @@ def calendar_fetch(b: UrlIn, authorization: Optional[str] = Header(default=None)
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "vapid": bool(VAPID_PRIVATE and VAPID_PUBLIC)}
+    return {"ok": True, "vapid": bool(VAPID_PRIVATE and VAPID_PUBLIC),
+            "db": "postgres" if database.PG else "sqlite", "durable": database.DURABLE}
 
 
 # ---------- static app ----------

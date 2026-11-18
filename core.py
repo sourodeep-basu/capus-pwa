@@ -7,11 +7,12 @@ import json
 import re
 import secrets
 import socket
-import sqlite3
 import time
 import urllib.error
 import urllib.request
 from urllib.parse import urljoin, urlparse
+
+import database
 
 SESSION_SECONDS = 90 * 86400
 MAX_STATE_BYTES = 2_000_000
@@ -22,25 +23,25 @@ _fails = {}  # email -> recent failed login timestamps (in memory throttle)
 
 
 def init(con):
-    con.executescript(
+    con.script(
         """
         CREATE TABLE IF NOT EXISTS users(
-            id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL,
-            salt TEXT NOT NULL, pw TEXT NOT NULL, created REAL);
+            id {PK}, email TEXT UNIQUE NOT NULL,
+            salt TEXT NOT NULL, pw TEXT NOT NULL, created DOUBLE PRECISION);
         CREATE TABLE IF NOT EXISTS sessions(
-            token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, created REAL);
+            token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL, created DOUBLE PRECISION);
         CREATE TABLE IF NOT EXISTS userdata(
-            user_id INTEGER PRIMARY KEY, state TEXT NOT NULL, ts REAL NOT NULL);
+            user_id INTEGER PRIMARY KEY, state TEXT NOT NULL, ts DOUBLE PRECISION NOT NULL);
         CREATE TABLE IF NOT EXISTS profiles(
             user_id INTEGER PRIMARY KEY, handle TEXT UNIQUE NOT NULL, name TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS friendships(
             a INTEGER NOT NULL, b INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
-            created REAL, PRIMARY KEY(a, b));
+            created DOUBLE PRECISION, PRIMARY KEY(a, b));
         CREATE TABLE IF NOT EXISTS user_stats(
             user_id INTEGER PRIMARY KEY, focus_week INTEGER DEFAULT 0,
-            streak INTEGER DEFAULT 0, xp INTEGER DEFAULT 0, updated REAL);
+            streak INTEGER DEFAULT 0, xp INTEGER DEFAULT 0, updated DOUBLE PRECISION);
         CREATE TABLE IF NOT EXISTS snoozes(
-            id INTEGER PRIMARY KEY AUTOINCREMENT, device_id TEXT, title TEXT, body TEXT, send_at REAL);
+            id {PK}, device_id TEXT, title TEXT, body TEXT, send_at DOUBLE PRECISION);
         """
     )
     con.commit()
@@ -67,12 +68,14 @@ def register(con, email, password):
         raise ValueError("Password must be at least 8 characters")
     salt = secrets.token_hex(16)
     try:
-        cur = con.execute("INSERT INTO users(email,salt,pw,created) VALUES(?,?,?,?)",
-                          (email, salt, _hash(password, salt), time.time()))
-    except sqlite3.IntegrityError:
+        con.execute("INSERT INTO users(email,salt,pw,created) VALUES(?,?,?,?)",
+                    (email, salt, _hash(password, salt), time.time()))
+    except database.IntegrityError:
+        con.rollback()
         raise ValueError("That email is already registered")
     con.commit()
-    return _new_session(con, cur.lastrowid), False
+    uid = con.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()["id"]
+    return _new_session(con, uid), False
 
 
 def login(con, email, password):
@@ -152,7 +155,8 @@ def set_handle(con, uid, handle, name):
         con.execute("""INSERT INTO profiles(user_id,handle,name) VALUES(?,?,?)
                        ON CONFLICT(user_id) DO UPDATE SET handle=excluded.handle, name=excluded.name""",
                     (uid, handle, name))
-    except sqlite3.IntegrityError:
+    except database.IntegrityError:
+        con.rollback()
         raise ValueError("That handle is taken")
     con.commit()
 
@@ -194,18 +198,18 @@ def overview(con, uid):
     """Only totals are shared: handle, display name, focus minutes (7 days), best streak and XP."""
     def stat(u):
         r = con.execute(
-            """SELECT p.user_id id, p.handle, p.name, COALESCE(s.focus_week,0) focus_week,
-               COALESCE(s.streak,0) streak, COALESCE(s.xp,0) xp
+            """SELECT p.user_id AS id, p.handle, p.name, COALESCE(s.focus_week,0) AS focus_week,
+               COALESCE(s.streak,0) AS streak, COALESCE(s.xp,0) AS xp
                FROM profiles p LEFT JOIN user_stats s ON s.user_id=p.user_id WHERE p.user_id=?""", (u,)).fetchone()
         return dict(r) if r else None
     me = stat(uid)
-    fids = [r[0] for r in con.execute(
-        """SELECT CASE WHEN a=? THEN b ELSE a END FROM friendships
+    fids = [r["fid"] for r in con.execute(
+        """SELECT CASE WHEN a=? THEN b ELSE a END AS fid FROM friendships
            WHERE status='accepted' AND (a=? OR b=?)""", (uid, uid, uid))]
     incoming = [dict(r) for r in con.execute(
-        """SELECT p.user_id id, p.handle, p.name FROM friendships f JOIN profiles p ON p.user_id=f.a
+        """SELECT p.user_id AS id, p.handle, p.name FROM friendships f JOIN profiles p ON p.user_id=f.a
            WHERE f.b=? AND f.status='pending'""", (uid,))]
-    outgoing = [r[0] for r in con.execute(
+    outgoing = [r["handle"] for r in con.execute(
         """SELECT p.handle FROM friendships f JOIN profiles p ON p.user_id=f.b
            WHERE f.a=? AND f.status='pending'""", (uid,))]
     friends = [x for x in (stat(f) for f in fids) if x]
