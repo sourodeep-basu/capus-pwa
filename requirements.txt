@@ -3,3 +3,4 @@ uvicorn[standard]>=0.29
 pywebpush>=2.0
 py-vapid>=1.9
 python-dotenv>=1.0
+psycopg[binary]>=3.1
