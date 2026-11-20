@@ -1,5 +1,5 @@
 // Campus Life service worker: offline shell, push (with action buttons), background sync.
-const CACHE = 'campus-life-v8';
+const CACHE = 'campus-life-v9';
 const SHELL = ['/', '/manifest.json', '/icon-192.png', '/icon-512.png'];
 
 // --- tiny IndexedDB helpers (same database the app uses) ---
@@ -31,13 +31,13 @@ self.addEventListener('fetch', e => {
 
 // --- background sync: push the latest local snapshot when the connection returns ---
 async function bgSync() {
-  const auth = await idbGet('auth'), st = await idbGet('state');
+  const auth = await idbGet('auth'), st = await idbGet('state'), base = await idbGet('base');
   if (!auth || !st) return;
   const { ntf, ...state } = st;
   const r = await fetch('/api/data/push', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + auth.token },
-    body: JSON.stringify({ ts: st._ts || Date.now(), state })
+    body: JSON.stringify({ ts: st._ts || Date.now(), base: base || 0, state })
   });
   if (!r.ok && r.status !== 401) throw new Error('retry later');
 }

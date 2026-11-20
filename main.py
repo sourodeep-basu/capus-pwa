@@ -18,6 +18,7 @@ from pywebpush import WebPushException, webpush
 
 import core
 import database
+import mailer
 
 load_dotenv()
 BASE = Path(__file__).parent
@@ -214,8 +215,22 @@ class AuthIn(BaseModel):
 
 class PushStateIn(BaseModel):
     ts: float = Field(gt=0)
+    base: Optional[float] = None
     state: dict
     stats: Optional[dict] = None
+
+
+class CodeIn(BaseModel):
+    code: str = Field(max_length=20)
+
+
+class EmailIn(BaseModel):
+    email: str = Field(max_length=320)
+
+
+class ResetIn(EmailIn):
+    code: str = Field(max_length=20)
+    password: str = Field(max_length=200)
 
 
 class HandleIn(BaseModel):
@@ -342,12 +357,56 @@ def logout(authorization: Optional[str] = Header(default=None)):
     return {"ok": True}
 
 
+@app.post("/api/auth/verify")
+def auth_verify(b: CodeIn, authorization: Optional[str] = Header(default=None)):
+    uid = uid_of(authorization)
+    with closing(db()) as con:
+        try:
+            core.verify_email(con, uid, b.code)
+        except ValueError as e:
+            raise bad(e)
+    return {"ok": True}
+
+
+@app.post("/api/auth/resend")
+def auth_resend(authorization: Optional[str] = Header(default=None)):
+    uid = uid_of(authorization)
+    with closing(db()) as con:
+        try:
+            core.resend_verification(con, uid)
+        except ValueError as e:
+            raise bad(e)
+        except Exception:
+            raise HTTPException(502, "Could not send the email. Try again later")
+    return {"ok": True}
+
+
+@app.post("/api/auth/forgot")
+def auth_forgot(b: EmailIn):
+    with closing(db()) as con:
+        try:
+            core.forgot_password(con, b.email)
+        except ValueError as e:
+            raise bad(e)
+    return {"ok": True}  # same answer whether or not the email has an account
+
+
+@app.post("/api/auth/reset")
+def auth_reset(b: ResetIn):
+    with closing(db()) as con:
+        try:
+            core.reset_password(con, b.email, b.code, b.password)
+        except ValueError as e:
+            raise bad(e)
+    return {"ok": True}
+
+
 @app.post("/api/data/push")
 def data_push(b: PushStateIn, authorization: Optional[str] = Header(default=None)):
     uid = uid_of(authorization)
     with closing(db()) as con:
         try:
-            return core.save_state(con, uid, b.ts, b.state, b.stats)
+            return core.save_state(con, uid, b.ts, b.state, b.stats, b.base)
         except ValueError as e:
             raise bad(e)
 
@@ -365,6 +424,7 @@ def social_handle(b: HandleIn, authorization: Optional[str] = Header(default=Non
     uid = uid_of(authorization)
     with closing(db()) as con:
         try:
+            core.require_verified(con, uid)
             core.set_handle(con, uid, b.handle, b.name)
         except ValueError as e:
             raise bad(e)
@@ -376,6 +436,7 @@ def social_request(b: RequestIn, authorization: Optional[str] = Header(default=N
     uid = uid_of(authorization)
     with closing(db()) as con:
         try:
+            core.require_verified(con, uid)
             return {"result": core.friend_request(con, uid, b.handle)}
         except ValueError as e:
             raise bad(e)
@@ -417,7 +478,8 @@ def calendar_fetch(b: UrlIn, authorization: Optional[str] = Header(default=None)
 @app.get("/api/health")
 def health():
     return {"ok": True, "vapid": bool(VAPID_PRIVATE and VAPID_PUBLIC),
-            "db": "postgres" if database.PG else "sqlite", "durable": database.DURABLE}
+            "db": "postgres" if database.PG else "sqlite", "durable": database.DURABLE,
+            "mail": mailer.enabled()}
 
 
 # ---------- static app ----------
